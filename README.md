@@ -1,2 +1,3 @@
-# my-site-test
-testing a webpage with gh-pages!
+# Gabe's awesome website
+
+Look at all my cool data science projects!
