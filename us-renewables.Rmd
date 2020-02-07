@@ -6,6 +6,214 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
 ```
+
+## Attach packages:
+
+```{r}
+library(tidyverse)
+library(janitor)
+library(lubridate)
+library(here)
+library(paletteer)
+library(tsibble)
+library(fable)
+library(fabletools)
+library(feasts)
+library(forecast)
+library(sf)
+library(tmap)
+library(mapview)
+library(naniar)
+```
+
+
+## Monthly US energy consumption (renewables)
+
+
+```{r}
+us_renew <- read_csv(here::here("data", "renewables_cons_prod.csv")) %>% 
+  clean_names()
+```
+
+- Make description all lowecase
+- only keep observations where the "description" variable contains "consumption"
+- remove any observations where "description" variable contains "total"
+
+```{r}
+renew_clean <- us_renew %>% 
+  mutate(description = str_to_lower(description)) %>% 
+  filter(str_detect(description, pattern = "consumption")) %>% 
+  filter(!str_detect(description, pattern = "total"))
+```
+
+# Convert `yyyymm` to date
+
+# To work with feast/fable, we want to convert the date to year month using the tsibble package
+
+```{r}
+renew_date <- renew_clean %>% 
+  mutate(yr_mo_day = lubridate::parse_date_time(yyyymm, "ym")) %>% 
+  mutate(month_sep = yearmonth(yr_mo_day)) %>% 
+  mutate(value = as.numeric(value)) %>% 
+  drop_na(month_sep, value)
+
+
+# Make a version where month and year are separate columns:
+
+renew_parsed <- renew_date %>% 
+  mutate(year = year(yr_mo_day)) %>% 
+  mutate(month = month(yr_mo_day, label = TRUE))
+
+```
+
+
+# Let's look at it:
+
+```{r}
+
+renew_gg <- ggplot(data = renew_date, aes(x = month_sep, 
+                                          y = value, 
+                                          group = description)) +
+  geom_line(aes(color = description)) 
+  
+renew_gg
+
+```
+
+Update colors with paletteer colors:
+
+```{r}
+
+renew_gg +
+  scale_color_paletteer_d("palettetown::tyranitar")
+
+```
+
+
+### Corerce renew_parsed to a tsibble
+
+key = main variable you're looking at (not required)
+indes = tsibble compatible time series 
+
+```{r}
+renew_ts <- as_tsibble(renew_parsed, key = description, index = month_sep)
+```
+
+Let's look at our ts data in a few different ways:
+
+```{r}
+
+# Autoplot knows which value is your key!
+
+renew_ts %>% autoplot(value)
+
+# gg_subseries breaks up years and months for you
+
+renew_ts %>% gg_subseries(value)
+
+# We can also explore a season plot: within each season, how have things shifted over time
+
+# Whoop. This shit don't work.
+
+## renew_ts %>% gg_season(value, n = year))
+
+# But, we can make this with ggplot!!!
+
+ggplot(data = renew_parsed, aes(x = month, y = value, group = year)) +
+  geom_line(aes(color = year)) +
+  facet_wrap(~description,
+             ncol = 1, 
+             scales = "free",
+             strip.position = "right")
+
+```
+
+### Let's just look at the hydroelectric consumption:
+
+
+```{r}
+hydro_ts <- renew_ts %>% 
+  filter(description == "hydroelectric power consumption")
+
+
+hydro_ts %>% autoplot(value)
+hydro_ts %>% gg_subseries(value)
+
+ggplot(data = hydro_ts, aes(x = month, y = value, group = year)) +
+  geom_line(aes(color = year))
+
+```
+
+### What if I want the quarterly average consumption for hydro?
+
+We can use a function `index_by()` in the tsibble package
+
+```{r}
+hydro_quarterly <- hydro_ts %>% 
+  index_by(year_qu = ~(yearquarter(.))) %>% 
+  summarize(avg_consumption = mean(value))
+```
+
+
+### Let's decompose that hydro_ts data and look at different components
+
+
+STL decomposes by Loess smoothing
+
+```{r}
+dcmp <- hydro_ts %>% 
+  model(STL(value ~ season(window = 5)))
+  
+components(dcmp) %>% autoplot()
+
+```
+
+
+```{r}
+# Viewing residuals is easy too
+
+hist(components(dcmp)$remainder)
+
+```
+
+Now, lets look at the autocorrelation
+
+```{r}
+hydro_ts %>% 
+  ACF(value) %>% 
+  autoplot()
+```
+
+### DANGER DANGER do a lot of reading before forecasting....
+
+
+```{r}
+hydro_model <- hydro_ts %>% 
+  model(
+    ARIMA(value)
+  ) %>% 
+  fabletools::forecast(h = "4 years")
+
+
+hydro_model %>% autoplot(filter(hydro_ts, year(month_sep) > 2010))
+
+```
+
+### Make a world map!
+
+
+mapview is awesome for a quick and dirty look at spatial data
+```{r}
+
+world <- read_sf(here::here("data", "TM_WORLD_BORDERS_SIMPL-0.3-1"),
+                 layer = "TM_WORLD_BORDERS_SIMPL-0.3")
+
+mapview(world)
+
+```
+
+
+
 
